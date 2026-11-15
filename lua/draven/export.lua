@@ -49,11 +49,7 @@ end
 ---@param session draven.Session
 ---@return string
 local function scope(session)
-	local cs = session.changeset
-	if cs.revspec.kind == "range" then
-		return cs.revspec.arg
-	end
-	return ("working tree against %s"):format(cs.revspec.base)
+	return session.changeset.revspec.label
 end
 
 ---Findings as markdown, ready to paste into an agent.

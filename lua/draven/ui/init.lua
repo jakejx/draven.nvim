@@ -163,7 +163,7 @@ local function focus_view()
 end
 
 ---@param file draven.File
----@param opts? { hunk?: draven.Hunk, focus?: boolean }
+---@param opts? { hunk?: draven.Hunk, focus?: boolean, preserve_view?: boolean }
 local function show_file(file, opts)
 	opts = opts or {}
 	if not active then
@@ -172,6 +172,7 @@ local function show_file(file, opts)
 
 	active.view:show(file, {
 		hunk = opts.hunk,
+		preserve_view = opts.preserve_view,
 		on_done = function()
 			if not active then
 				return
@@ -354,13 +355,27 @@ local function finding_at_cursor()
 	return items[1]
 end
 
+---A composer belongs to the review where it was opened, even across refreshes.
+local function compose_finding(opts, save)
+	local review, path = active, active.session.path
+	opts.on_submit = function(body, severity)
+		if active ~= review or review.session.path ~= path then
+			log.warn("review changed — return to the original review before saving this finding")
+			return false
+		end
+		save(review.session, body, severity)
+		review.view:redraw()
+		repaint_panel()
+	end
+	require("draven.ui.comment").open(opts)
+end
+
 ---@param existing draven.Finding
 local function edit_finding(existing)
-	local comment = require("draven.ui.comment")
 	local first = existing.lnum or existing.last_lnum or 0
 	local span = existing.lnum and math.max(1, existing.span or 1) or 1
 	local location = span > 1 and ("%d-%d"):format(first, first + span - 1) or tostring(first)
-	comment.open({
+	compose_finding({
 		title = ("%s:%s%s"):format(
 			existing.path,
 			location,
@@ -368,15 +383,9 @@ local function edit_finding(existing)
 		),
 		body = existing.body,
 		severity = existing.severity,
-		on_submit = function(body, severity)
-			if not active then
-				return
-			end
-			active.session:update_finding(existing.id, body, severity)
-			active.view:redraw()
-			repaint_panel()
-		end,
-	})
+	}, function(session, body, severity)
+		session:update_finding(existing.id, body, severity)
+	end)
 end
 
 ---Write a finding against the line under the cursor or a selected line range.
@@ -407,8 +416,6 @@ function M.comment(first_lnum, last_lnum)
 		return
 	end
 
-	local comment = require("draven.ui.comment")
-
 	local lnum = is_range and math.min(first_lnum, last_lnum)
 		or vim.api.nvim_win_get_cursor(active.view_win)[1]
 	local last = is_range and math.max(first_lnum, last_lnum) or lnum
@@ -427,21 +434,15 @@ function M.comment(first_lnum, last_lnum)
 	local span = last - lnum + 1
 	local location = span > 1 and ("%d-%d"):format(lnum, last) or tostring(lnum)
 
-	comment.open({
+	compose_finding({
 		title = ("%s:%s"):format(file.path, location),
-		on_submit = function(body, severity)
-			if not active then
-				return
-			end
-			active.session:add_finding(hunk, lnum, {
-				body = body,
-				severity = severity,
-				span = span,
-			})
-			active.view:redraw()
-			repaint_panel()
-		end,
-	})
+	}, function(session, body, severity)
+		session:add_finding(hunk, lnum, {
+			body = body,
+			severity = severity,
+			span = span,
+		})
+	end)
 end
 
 ---Collapse the finding under the cursor, or open it back up.
@@ -696,7 +697,7 @@ function M.toggle_panel()
 	focus_view()
 end
 
----Rebuild the changeset from git, keeping every mark.
+---Rebuild the changeset from the VCS, keeping every mark.
 ---@param opts? { silent?: boolean }
 function M.refresh(opts)
 	opts = opts or {}
@@ -704,10 +705,10 @@ function M.refresh(opts)
 		return
 	end
 
-	local rev = active.rev
-	local cwd = active.session.changeset.root
+	local build_opts = vim.deepcopy(active.review_opts)
+	build_opts.cwd = active.session.changeset.root
 
-	require("draven").changeset({ rev = rev, cwd = cwd }, function(err, cs)
+	require("draven").changeset(build_opts, function(err, cs)
 		if not active then
 			return
 		end
@@ -722,14 +723,16 @@ function M.refresh(opts)
 
 		local file = path and changeset_mod.file(cs, path)
 		if file then
-			active.view.file = file
-			active.view:redraw()
-			-- Hunks may have moved, so the fold geometry is no longer valid.
-			active.view:recompute_folds()
+			-- Historical/deleted buffers must reload their content as well as
+			-- decorations; a live file may also have become a deletion.
+			show_file(file, { focus = false, preserve_view = true })
 		else
 			local entry = active.session:first_target()
 			if entry then
-				goto_entry(entry)
+				show_file(entry.file, { hunk = entry.hunk, focus = false })
+			elseif active.view.bufnr then
+				require("draven.ui.render").clear(active.view.bufnr)
+				active.view.file = nil
 			end
 		end
 
@@ -741,6 +744,53 @@ function M.refresh(opts)
 end
 
 --- Lifecycle -----------------------------------------------------------------
+
+---@class draven.Context
+---@field root string
+---@field backend "git"|"jj"
+---@field revspec draven.RevSpec
+---@field base_rev string|nil
+---@field head_rev string|nil
+---@field tabpage integer
+---@field file string|nil # path of the file under the cursor
+---@field files table<string, string> # path -> `Session:file_state()`
+
+---@return draven.Context|nil
+function M.get_context()
+	if not M.is_open() then
+		return nil
+	end
+	local cs = active.session.changeset
+	local file = current_file()
+	return {
+		root = cs.root,
+		backend = cs.backend,
+		revspec = cs.revspec,
+		base_rev = cs.base_rev,
+		head_rev = cs.head_rev,
+		tabpage = active.tabpage,
+		file = file and file.path,
+		files = active.session:file_states(),
+	}
+end
+
+---Focus the review and show `path`, at its first unread hunk if any.
+---@param path string
+---@return boolean found
+function M.goto_path(path)
+	if not M.is_open() then
+		return false
+	end
+	for _, file in ipairs(active.session.changeset.files) do
+		if file.path == path then
+			vim.api.nvim_set_current_tabpage(active.tabpage)
+			local entry = active.session:first_in_file(path)
+			show_file(file, { hunk = entry and entry.hunk })
+			return true
+		end
+	end
+	return false
+end
 
 ---@return boolean
 function M.is_open()
@@ -867,7 +917,7 @@ local function install_autocmds()
 end
 
 ---Open a review, or focus the one already open.
----@param opts? { rev?: string, cwd?: string }
+---@param opts? draven.ReviewOptions
 function M.open(opts)
 	opts = opts or {}
 
@@ -878,7 +928,7 @@ function M.open(opts)
 
 	highlights.attach()
 
-	require("draven").changeset({ rev = opts.rev, cwd = opts.cwd }, function(err, cs)
+	require("draven").changeset(opts, function(err, cs)
 		if err or not cs then
 			log.error(err or "could not build the changeset")
 			return
@@ -892,6 +942,8 @@ function M.open(opts)
 
 		active = build_layout(session)
 		active.rev = opts.rev
+		active.review_opts = vim.deepcopy(opts)
+		active.review_opts.backend = cs.backend
 
 		attach_keymaps(active.panel.bufnr, { panel = true })
 		remember_mapped(active.panel.bufnr)

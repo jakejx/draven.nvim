@@ -270,7 +270,7 @@ describe("changeset.build", function()
 		vim.fn.delete(dir, "rf")
 
 		assert.is_false(ok)
-		assert.is_truthy(tostring(err):match("not inside a git repository"))
+		assert.is_truthy(tostring(err):match("not inside a jj or git repository"))
 	end)
 
 	it("iterates hunks across files, skipping ignored ones", function()
@@ -370,7 +370,7 @@ describe("draven public api", function()
 		vim.fn.delete(dir, "rf")
 
 		assert.is_truthy(failure)
-		assert.is_truthy(tostring(failure):match("not inside a git repository"))
+		assert.is_truthy(tostring(failure):match("not inside a jj or git repository"))
 	end)
 
 	it("summarises a changeset", function()

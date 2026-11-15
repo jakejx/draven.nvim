@@ -1,21 +1,41 @@
----Changeset construction: git plumbing in, reviewable model out.
 ---
 ---Must be called inside `async.run`.
 local config = require("draven.config")
 local diff = require("draven.core.diff")
 local fs = require("draven.util.fs")
 local git = require("draven.core.git")
+local vcs = require("draven.core.vcs")
 local hunk = require("draven.core.hunk")
 local ignore = require("draven.core.ignore")
 
 local M = {}
+
+---@class draven.ReviewOptions
+---@field cwd? string
+---@field backend? "auto"|"git"|"jj"
+---@field rev? string # Git revspec or one jj revision
+---@field from? string # jj only; omitted endpoint defaults to @
+---@field to? string # jj only; omitted endpoint defaults to @
 
 ---@class draven.RevSpec
 ---@field kind "worktree"|"range"
 ---@field base string
 ---@field head string|nil # nil means the working tree
 ---@field symmetric boolean # true for `a...b`
----@field arg string # exactly what the user typed
+---@field arg string # backend-specific revision arguments
+---@field label string # canonical human-readable review scope
+
+---Normalized result of backend.review(opts, root); storage identity is owned
+---by the backend and must not be derived from the display label.
+---@class draven.BackendReview
+---@field revspec draven.RevSpec
+---@field state_dir string # absolute directory for persisted review state
+---@field state_key string # stable, filesystem-safe review identity
+---@field raw string # unified diff
+---@field base_rev string|nil # opaque base identity for stale detection
+---@field head_rev string|nil # resolved post-image revision, when available
+---@field unborn boolean
+---@field git_dir string|nil # backward-compatible Git metadata
 
 ---@class draven.File
 ---@field path string
@@ -42,59 +62,20 @@ local M = {}
 
 ---@class draven.Changeset
 ---@field root string
----@field git_dir string
+---@field backend "git"|"jj"
+---@field git_dir string|nil # Git only
+---@field state_dir string # backend-owned storage directory
+---@field state_key string # stable backend-specific review identity
+---@field head_rev string|nil # resolved post-image revision
 ---@field revspec draven.RevSpec
----@field base_rev string|nil # resolved sha, nil for a commit range
+---@field base_rev string|nil # base identity; opaque for jj merged parents
 ---@field unborn boolean # HEAD has no commits yet
 ---@field files draven.File[]
 ---@field stats draven.Stats
 ---@field created_at integer
 
----@param arg string|nil
----@return draven.RevSpec
-function M.parse_revspec(arg)
-	arg = arg and vim.trim(arg) or ""
-
-	if arg == "" then
-		return {
-			kind = "worktree",
-			base = config.options.base,
-			head = nil,
-			symmetric = false,
-			arg = arg,
-		}
-	end
-
-	local a, b = arg:match("^(.-)%.%.%.(.*)$")
-	if a then
-		return {
-			kind = "range",
-			base = a ~= "" and a or "HEAD",
-			head = b ~= "" and b or "HEAD",
-			symmetric = true,
-			arg = arg,
-		}
-	end
-
-	a, b = arg:match("^(.-)%.%.(.*)$")
-	if a then
-		return {
-			kind = "range",
-			base = a ~= "" and a or "HEAD",
-			head = b ~= "" and b or "HEAD",
-			symmetric = false,
-			arg = arg,
-		}
-	end
-
-	return {
-		kind = "worktree",
-		base = arg,
-		head = nil,
-		symmetric = false,
-		arg = arg,
-	}
-end
+---Parse Git revision syntax (kept for API compatibility).
+M.parse_revspec = git.parse_revspec
 
 ---@param raw draven.RawFile
 ---@return draven.File
@@ -224,46 +205,23 @@ local function compute_stats(files)
 	return stats
 end
 
----@param opts? { rev?: string, cwd?: string }
+---@param opts? draven.ReviewOptions
 ---@return draven.Changeset
 function M.build(opts)
 	opts = opts or {}
 
 	local cwd = opts.cwd or vim.fn.getcwd()
-	local root = git.root(cwd)
-	local spec = M.parse_revspec(opts.rev)
-
-	local base_rev, unborn = nil, false
-	local diff_arg = spec.arg
-
-	if spec.kind == "worktree" then
-		base_rev = git.resolve(spec.base, root)
-
-		if not base_rev then
-			if spec.base == "HEAD" then
-				-- Fresh repo with no commits: everything reads as added.
-				base_rev, unborn = git.EMPTY_TREE, true
-			else
-				error(("draven: cannot resolve revision '%s'"):format(spec.base), 0)
-			end
-		end
-
-		diff_arg = unborn and git.EMPTY_TREE or spec.base
-	else
-		-- Ranges need a resolved base too: it is the coordinate system the
-		-- old side of every hunk is measured against, and stale detection
-		-- is only meaningful while it holds still.
-		base_rev = spec.symmetric and git.merge_base(spec.base, spec.head, root)
-			or git.resolve(spec.base, root)
-	end
-
+	local backend, _, name = vcs.detect(cwd, opts.backend)
+	local root = backend.root(cwd)
+	local review = backend.review(opts, root)
+	local spec = review.revspec
 	local files = {}
-	for _, raw in ipairs(diff.parse(git.diff({ diff_arg }, root))) do
+	for _, raw in ipairs(diff.parse(review.raw)) do
 		files[#files + 1] = file_from_raw(raw)
 	end
 
-	if spec.kind == "worktree" and config.options.include_untracked then
-		for _, path in ipairs(git.untracked(root)) do
+	if name == "git" and spec.kind == "worktree" and config.options.include_untracked then
+		for _, path in ipairs(backend.untracked(root)) do
 			local file = untracked_file(root, path)
 			if file then
 				files[#files + 1] = file
@@ -281,10 +239,14 @@ function M.build(opts)
 
 	return {
 		root = root,
-		git_dir = git.git_dir(root),
+		backend = name,
+		git_dir = review.git_dir,
+		state_dir = review.state_dir,
+		state_key = review.state_key,
+		head_rev = review.head_rev,
 		revspec = spec,
-		base_rev = base_rev,
-		unborn = unborn,
+		base_rev = review.base_rev,
+		unborn = review.unborn,
 		files = files,
 		stats = compute_stats(files),
 		created_at = os.time(),

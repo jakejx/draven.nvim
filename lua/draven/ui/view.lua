@@ -7,7 +7,9 @@
 ---syntax keep working there too.
 local async = require("draven.util.async")
 local config = require("draven.config")
-local git = require("draven.core.git")
+local function backend(cs)
+	return require("draven.core." .. cs.backend)
+end
 local hunk_mod = require("draven.core.hunk")
 local render = require("draven.ui.render")
 
@@ -82,7 +84,7 @@ local function detect_filetype(path, bufnr)
 end
 
 ---Resolve the buffer that should be displayed for `file`. Runs inside the
----async runtime because commit ranges and deleted files need `git show`.
+---async runtime because historical content may need a VCS command.
 ---@param file draven.File
 ---@return integer bufnr
 ---@return boolean deleted_file
@@ -111,7 +113,7 @@ function View:_buffer_for(file)
 	-- Deleted: the only content is the pre-image, from the base revision.
 	if file.status == "deleted" then
 		local rev = cs.base_rev or cs.revspec.base
-		local content = git.show(rev, file.old_path or file.path, cs.root)
+		local content = backend(cs).preimage(cs, file)
 		local lines = content and vim.split(content, "\n", { plain = true }) or { "" }
 		if lines[#lines] == "" then
 			table.remove(lines)
@@ -126,8 +128,8 @@ function View:_buffer_for(file)
 	-- A commit range never touches the working tree, so read the post-image
 	-- out of the object database.
 	if cs.revspec.kind == "range" then
-		local rev = cs.revspec.head or "HEAD"
-		local content = git.show(rev, file.path, cs.root)
+		local rev = cs.head_rev or cs.revspec.head or "HEAD"
+		local content = backend(cs).show(rev, file.path, cs.root)
 		local lines = content and vim.split(content, "\n", { plain = true }) or { "" }
 		if lines[#lines] == "" then
 			table.remove(lines)
@@ -191,9 +193,10 @@ end
 
 ---Display `file`, optionally putting the cursor on a particular hunk.
 ---@param file draven.File
----@param opts? { hunk?: draven.Hunk, lnum?: integer, on_done?: fun() }
+---@param opts? { hunk?: draven.Hunk, lnum?: integer, preserve_view?: boolean, on_done?: fun() }
 function View:show(file, opts)
 	opts = opts or {}
+	local saved_view = opts.preserve_view and vim.api.nvim_win_call(self.win, vim.fn.winsaveview)
 
 	async.run(function()
 		return self:_buffer_for(file)
@@ -240,7 +243,13 @@ function View:show(file, opts)
 			end
 		end
 
-		self:goto_line(lnum)
+		if saved_view then
+			vim.api.nvim_win_call(self.win, function()
+				vim.fn.winrestview(saved_view)
+			end)
+		else
+			self:goto_line(lnum)
+		end
 
 		if opts.on_done then
 			opts.on_done()

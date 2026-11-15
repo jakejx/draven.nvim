@@ -16,7 +16,7 @@ end
 ---until the result is ready, which is convenient from `:lua` and tests but
 ---must not be done from a mapping or autocmd.
 ---
----@param opts? { rev?: string, cwd?: string }
+---@param opts? draven.ReviewOptions
 ---@param cb? fun(err: string|nil, cs: draven.Changeset|nil)
 ---@return draven.Changeset|nil # only when called without a callback
 function M.changeset(opts, cb)
@@ -41,15 +41,6 @@ end
 function M.summary(cs)
 	local s = cs.stats
 
-	local scope
-	if cs.revspec.kind == "range" then
-		scope = cs.revspec.arg
-	elseif cs.unborn then
-		scope = "working tree (no commits yet)"
-	else
-		scope = ("working tree ← %s"):format(cs.revspec.base)
-	end
-
 	local parts = {
 		("%d file%s"):format(s.files, s.files == 1 and "" or "s"),
 		("%d hunk%s"):format(s.hunks, s.hunks == 1 and "" or "s"),
@@ -63,7 +54,7 @@ function M.summary(cs)
 		parts[#parts + 1] = ("%d binary"):format(s.binary_files)
 	end
 
-	return ("%s · %s"):format(scope, table.concat(parts, " · "))
+	return ("%s · %s"):format(cs.revspec.label, table.concat(parts, " · "))
 end
 
 local STATUS_MARK = {
@@ -118,7 +109,7 @@ function M.lines(cs)
 end
 
 ---Open the review surface, or focus it if it is already open.
----@param opts? { rev?: string, cwd?: string }
+---@param opts? draven.ReviewOptions
 function M.open(opts)
 	require("draven.ui").open(opts)
 end
@@ -127,7 +118,7 @@ function M.close()
 	require("draven.ui").close()
 end
 
----@param opts? { rev?: string, cwd?: string }
+---@param opts? draven.ReviewOptions
 function M.toggle(opts)
 	require("draven.ui").toggle(opts)
 end
@@ -135,6 +126,21 @@ end
 ---@return boolean
 function M.is_open()
 	return require("draven.ui").is_open()
+end
+
+---The open review's identity and per-file state, or nil when none is open.
+---See `:help draven.get_context()`.
+---@return draven.Context|nil
+function M.get_context()
+	return require("draven.ui").get_context()
+end
+
+---Show `path` in the open review. Returns false if no review is open or the
+---path is not in it.
+---@param path string
+---@return boolean
+function M.goto_file(path)
+	return require("draven.ui").goto_path(path)
 end
 
 ---Copy the open review's findings as a prompt for the agent.
@@ -155,7 +161,7 @@ function M.reset(opts)
 	opts = opts or {}
 	local log = require("draven.util.log")
 
-	M.changeset({ rev = opts.rev, cwd = opts.cwd }, function(err, cs)
+	M.changeset(opts, function(err, cs)
 		if err or not cs then
 			log.error(err or "could not resolve the review to reset")
 			return
@@ -213,7 +219,8 @@ function M.status(rev, opts)
 	opts = opts or {}
 	local log = require("draven.util.log")
 
-	M.changeset({ rev = rev }, function(err, cs)
+	local build_opts = vim.tbl_extend("force", {}, opts, { rev = rev })
+	M.changeset(build_opts, function(err, cs)
 		if err or not cs then
 			log.error(err or "changeset build returned nothing")
 			return

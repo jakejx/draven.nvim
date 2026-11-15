@@ -48,6 +48,11 @@ jobs:
           neovim: true
           version: ${{ matrix.nvim }}
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install jj
+        run: cargo install --locked jj-cli --version 0.46.0
+
       - name: Cache plenary.nvim
         uses: actions/cache@v4
         with:

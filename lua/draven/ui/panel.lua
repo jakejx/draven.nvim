@@ -132,18 +132,9 @@ function Panel:render(session, active_path)
 	-- Header ------------------------------------------------------------
 	local signs = config.options.ui.signs
 
-	local scope
-	if cs.revspec.kind == "range" then
-		scope = cs.revspec.arg
-	elseif cs.unborn then
-		scope = "working tree · no commits"
-	else
-		scope = ("working tree ← %s"):format(cs.revspec.base)
-	end
-
 	-- Name and scope share a line: the panel is narrow, and two lines of
 	-- chrome before any content is a line too many.
-	local head = (" draven  %s"):format(fit(scope, math.max(4, width - 10)))
+	local head = (" draven  %s"):format(fit(cs.revspec.label, math.max(4, width - 10)))
 	local head_line = put(head, { kind = "chrome" })
 	mark(head_line, 1, 6, "DravenPanelTitle")
 	mark(head_line, 9, #head - 9, "DravenPanelBase")

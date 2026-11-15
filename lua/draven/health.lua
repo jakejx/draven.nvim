@@ -12,25 +12,30 @@ function M.check()
 	end
 
 	local config = require("draven.config")
-	local bin = config.options.git.bin
+	local detected, backend, root, name = pcall(require("draven.core.vcs").detect)
+	if not detected then
+		health.info(tostring(backend))
+		return
+	end
+	local bin = config.options[name].bin
 
 	if vim.fn.executable(bin) == 0 then
-		health.error(("git executable '%s' not found"):format(bin))
+		health.error(("%s executable '%s' not found"):format(name, bin))
 		return
 	end
 
 	local version = vim.fn.system({ bin, "--version" }):match("(%d+%.%d+%.%d+)")
 	if version then
-		health.ok(("git %s"):format(version))
+		health.ok(("%s %s"):format(name, version))
 	else
 		health.warn(("could not determine the version of '%s'"):format(bin))
 	end
 
-	local git_dir = vim.trim(vim.fn.system({ bin, "rev-parse", "--absolute-git-dir" }))
-	if vim.v.shell_error == 0 then
-		health.ok("current directory is inside a git repository")
-
-		local dir = git_dir .. "/draven"
+	local ok, dir = pcall(require("draven.util.async").block, function()
+		return backend.storage_dir(root)
+	end)
+	if ok then
+		health.ok("current directory is inside a " .. name .. " repository")
 		if vim.fn.isdirectory(dir) == 1 then
 			local reviews = vim.fn.glob(dir .. "/*.json", true, true)
 			health.info(
@@ -40,7 +45,7 @@ function M.check()
 			health.info("no reviews saved yet for this repository")
 		end
 	else
-		health.info("current directory is not a git repository — open one to review")
+		health.error(tostring(dir))
 	end
 
 	if vim.fn.has("nvim-0.10") == 1 and vim.fn.exists("*sha256") == 0 then

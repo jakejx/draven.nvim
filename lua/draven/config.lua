@@ -33,7 +33,9 @@ local M = {}
 ---@field fold_context integer
 
 ---@class draven.Config
----@field base string # default base revision for a working-tree review
+---@field backend "auto"|"git"|"jj"
+---@field jj draven.GitConfig # executable and timeout, same shape as git
+---@field base string # default base revision for a Git working-tree review
 ---@field context integer # lines of context per hunk
 ---@field include_untracked boolean
 ---@field max_file_bytes integer # untracked files above this are listed, not read
@@ -43,7 +45,8 @@ local M = {}
 ---@field ui draven.UiConfig
 ---@field keymaps table<string, string|false>
 local defaults = {
-	base = "HEAD",
+	backend = "auto", -- auto prefers jj at a colocated repository root
+	base = "HEAD", -- Git only; jj defaults to reviewing @ against its parents
 	context = 3,
 	include_untracked = true,
 	max_file_bytes = 1024 * 1024,
@@ -51,6 +54,11 @@ local defaults = {
 	-- post-image there is nothing to show a v1→v2 delta against.
 	max_snapshot_bytes = 256 * 1024,
 	log_level = vim.log.levels.INFO,
+
+	jj = {
+		bin = "jj",
+		timeout_ms = 15000,
+	},
 
 	git = {
 		bin = "git",

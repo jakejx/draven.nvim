@@ -38,6 +38,8 @@ vim.opt.rtp:append(root)
 -- So specs can `require("helpers")`.
 package.path = root .. "/tests/?.lua;" .. package.path
 
+-- UI tests do not need runtime ftplugins or their optional syntax parsers.
+vim.cmd("filetype plugin indent off")
 vim.opt.swapfile = false
 vim.env.GIT_CONFIG_GLOBAL = "/dev/null"
 vim.env.GIT_CONFIG_SYSTEM = "/dev/null"

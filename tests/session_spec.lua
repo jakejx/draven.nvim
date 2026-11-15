@@ -196,12 +196,7 @@ describe("state persistence", function()
 		local cs = helpers.build(repo)
 
 		assert.is_truthy(state_store.path(cs):match("%.git/draven/worktree@HEAD%.json$"))
-		assert.equals(
-			"range@main...HEAD",
-			state_store.key({
-				revspec = { kind = "range", arg = "main...HEAD", base = "main" },
-			})
-		)
+		assert.equals("range@HEAD..HEAD", state_store.key(helpers.build(repo, "HEAD..HEAD")))
 	end)
 
 	it("round-trips marks across sessions", function()

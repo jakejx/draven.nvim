@@ -50,7 +50,7 @@ resolution are deliberately out of scope.
 2. REQUIREMENTS                                          *draven-requirements*
 
   - Neovim 0.10 or newer (developed against 0.12)
-  - git
+  - Git or Jujutsu (jj; tested with 0.46)
 
 Run |:checkhealth| draven to verify.
 
@@ -98,7 +98,28 @@ buffer-local to the review, so unless you let lazy.nvim define one through
 :Draven [{revspec}]
 		Open the review, or focus it if it is already open.
 
-		With no argument, reviews the working tree against HEAD,
+		The nearest repository is selected; jj wins over Git in a
+		colocated workspace. Set backend = "git" or "jj" to override.
+
+		In jj workspaces, no argument reviews @ against the automatic
+		merge of its parents. Supported forms: >
+			:Draven
+			:Draven -r @-
+			:Draven @-
+			:Draven --from main --to @
+			:Draven --from main
+<
+		Each revision must resolve to one commit, not a whole stack.
+		Omitted from/to endpoints default to @. Do not combine -r with
+		from/to. Escape spaces in flag values with a backslash, or use
+		the Lua API: { rev = "..." } or { from = "...", to = "..." }.
+		These options also work with Toggle, Status and Reset.
+
+		jj snapshots using its tracking settings. Draven never
+		explicitly tracks files. include_untracked is Git-only.
+		Git revision range syntax is not applied to jj revsets.
+
+		In Git, no argument reviews the working tree against HEAD,
 		including untracked files, since that is where an agent's
 		new files show up. Otherwise {revspec} may be:
 
@@ -164,7 +185,7 @@ closes. Set any of them to `false` in your config to skip it
 	<leader>rq	Load findings into the |quickfix| list.
 	<leader>rx	Copy findings as a prompt for your agent.
 
-	<leader>rR	Rebuild from git, keeping every mark.
+	<leader>rR	Rebuild from the VCS, keeping every mark.
 	<leader>rw	Hide the panel, or bring it back. The changeset tree
 			earns its width while you are choosing what to read,
 			and not while you are reading.
@@ -292,14 +313,16 @@ instead, typed by severity, with blocking as `E`, question as `W` and nit as
 Defaults shown. Pass any subset to `require("draven").setup()`. >lua
 
 	require("draven").setup({
-	  base = "HEAD",              -- default base for a worktree review
+	  backend = "auto",           -- auto, git, or jj
+	  base = "HEAD",              -- Git only: default worktree base
 	  context = 3,                -- lines of context per hunk
-	  include_untracked = true,   -- new files the agent created
+	  include_untracked = true,   -- Git only; jj tracks files itself
 	  max_file_bytes = 1024*1024, -- bigger untracked files: listed only
 	  max_snapshot_bytes = 256*1024,
 	  log_level = vim.log.levels.INFO,
 
 	  git = { bin = "git", timeout_ms = 15000 },
+	  jj = { bin = "jj", timeout_ms = 15000 },
 
 	  ignore = {
 	    enabled = true,
@@ -426,6 +449,31 @@ draven.close()
 draven.toggle({opts})
 draven.is_open()
 
+                                                        *draven.get_context()*
+draven.get_context()
+		The open review, or `nil` when none is open, so other plugins
+		can integrate without reaching into draven's internals: >lua
+
+			{
+			  root     = "/home/you/project",
+			  backend  = "git",
+			  revspec  = { kind = "range", ... },
+			  base_rev = "abc...",
+			  head_rev = "def...",
+			  tabpage  = 3,
+			  file     = "lua/foo.lua", -- at cursor
+			  files    = { ["lua/foo.lua"] = "reviewed", ... },
+			}
+<
+		Each `files` value is one of `reviewed`, `partial`, `stale`,
+		`unread`, `ignored` or `empty`.
+
+                                                          *draven.goto_file()*
+draven.goto_file({path})
+		Focus the open review and show {path} at its first unread
+		hunk. Returns `false` if no review is open or {path} is not
+		part of it.
+
                                                           *draven.changeset()*
 draven.changeset({opts}, {callback})
 		Build a changeset. With a {callback} it runs asynchronously;
@@ -503,6 +551,14 @@ one file, and orphans are pruned when a review closes. Hunks larger than
 `max_snapshot_bytes` are still tracked but get no snapshot; their delta view
 will say so.
 
-Nothing is written outside the git directory, and nothing is committed.
+jj review state and snapshots live under <workspace>/.jj/draven instead.
+Default jj reviews are keyed by change ID: rewriting a change retains its
+review, while jj new starts a separate one. Explicit comparisons use hashed
+resolved endpoint change identities. Parent rewrites invalidate base
+coordinates, while exact content matches retain approvals.
+
+Review metadata stays inside .git or .jj and is not committed. jj commands
+snapshot the working copy normally, so opening/refreshing a review can update
+jj's working-copy commit.
 
 vim:tw=78:ts=8:noet:ft=help:norl:

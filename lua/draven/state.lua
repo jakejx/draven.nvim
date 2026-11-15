@@ -4,7 +4,7 @@
 ---number. That is the whole point: an edit somewhere else in the file cannot
 ---invalidate a mark, and a hunk that moves keeps it.
 ---
----The file is plain JSON under the git dir so it is greppable, diffable and
+---The file is plain JSON under the backend's state dir so it is greppable, diffable and
 ---hand-fixable when something goes wrong.
 local log = require("draven.util.log")
 
@@ -35,22 +35,13 @@ M.VERSION = 1
 ---@param cs draven.Changeset
 ---@return string
 function M.key(cs)
-	local spec = cs.revspec
-	local raw = ("%s@%s"):format(spec.kind, spec.arg ~= "" and spec.arg or spec.base)
-
-	local slug = raw:gsub("[^%w@%.%-_]", "-")
-	if #slug > 80 then
-		-- Keep it recognisable, but bounded.
-		slug = slug:sub(1, 72) .. "-" .. vim.fn.sha256(raw):sub(1, 7)
-	end
-
-	return slug
+	return cs.state_key
 end
 
 ---@param cs draven.Changeset
 ---@return string dir
 function M.dir(cs)
-	return cs.git_dir .. "/draven"
+	return cs.state_dir
 end
 
 ---@param cs draven.Changeset

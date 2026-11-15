@@ -80,6 +80,12 @@ function M.git_dir(cwd)
 	return vim.trim(M.exec({ "rev-parse", "--absolute-git-dir" }, { cwd = cwd }).stdout)
 end
 
+---@param root string
+---@return string
+function M.storage_dir(root)
+	return M.git_dir(root) .. "/draven"
+end
+
 ---Resolve a revision to a commit sha, or nil if it does not exist.
 ---@param rev string
 ---@param cwd? string
@@ -160,6 +166,118 @@ function M.version(cwd)
 		return nil
 	end
 	return out.stdout:match("(%d+%.%d+%.%d+)")
+end
+
+---@param arg string|nil
+---@return draven.RevSpec
+function M.parse_revspec(arg)
+	arg = arg and vim.trim(arg) or ""
+
+	if arg == "" then
+		return {
+			kind = "worktree",
+			base = config.options.base,
+			head = nil,
+			symmetric = false,
+			arg = arg,
+		}
+	end
+
+	local a, b = arg:match("^(.-)%.%.%.(.*)$")
+	if a then
+		return {
+			kind = "range",
+			base = a ~= "" and a or "HEAD",
+			head = b ~= "" and b or "HEAD",
+			symmetric = true,
+			arg = arg,
+		}
+	end
+
+	a, b = arg:match("^(.-)%.%.(.*)$")
+	if a then
+		return {
+			kind = "range",
+			base = a ~= "" and a or "HEAD",
+			head = b ~= "" and b or "HEAD",
+			symmetric = false,
+			arg = arg,
+		}
+	end
+
+	return {
+		kind = "worktree",
+		base = arg,
+		head = nil,
+		symmetric = false,
+		arg = arg,
+	}
+end
+
+---Preserve Git's existing state filenames independently of display labels.
+---@param spec draven.RevSpec
+---@return string
+local function state_key(spec)
+	local raw = ("%s@%s"):format(spec.kind, spec.arg ~= "" and spec.arg or spec.base)
+	local slug = raw:gsub("[^%w@%.%-_]", "-")
+	if #slug > 80 then
+		-- Keep it recognisable, but bounded.
+		slug = slug:sub(1, 72) .. "-" .. vim.fn.sha256(raw):sub(1, 7)
+	end
+	return slug
+end
+
+---Git's existing revision syntax and state location are preserved.
+---@return draven.BackendReview
+function M.review(opts, root)
+	if opts.from or opts.to then
+		error("draven: from/to options currently require the jj backend", 0)
+	end
+	local spec = M.parse_revspec(opts.rev)
+	local base_rev, unborn = nil, false
+	local diff_arg = spec.arg
+
+	if spec.kind == "worktree" then
+		base_rev = M.resolve(spec.base, root)
+
+		if not base_rev then
+			if spec.base == "HEAD" then
+				-- Fresh repo with no commits: everything reads as added.
+				base_rev, unborn = M.EMPTY_TREE, true
+			else
+				error(("draven: cannot resolve revision '%s'"):format(spec.base), 0)
+			end
+		end
+
+		diff_arg = unborn and M.EMPTY_TREE or spec.base
+	else
+		-- Ranges need a resolved base too: it is the coordinate system the
+		-- old side of every hunk is measured against, and stale detection
+		-- is only meaningful while it holds still.
+		base_rev = spec.symmetric and M.merge_base(spec.base, spec.head, root)
+			or M.resolve(spec.base, root)
+	end
+
+	spec.label = spec.kind == "range" and spec.arg
+		or (unborn and "working tree (no commits yet)" or ("working tree ← %s"):format(spec.base))
+	local git_dir = M.git_dir(root)
+	return {
+		git_dir = git_dir,
+		state_dir = git_dir .. "/draven",
+		state_key = state_key(spec),
+		revspec = spec,
+		base_rev = base_rev,
+		unborn = unborn,
+		raw = M.diff({ diff_arg }, root),
+	}
+end
+
+---Read the complete old side of a deleted file.
+---@param cs draven.Changeset
+---@param file draven.File
+---@return string|nil
+function M.preimage(cs, file)
+	return M.show(cs.base_rev or cs.revspec.base, file.old_path or file.path, cs.root)
 end
 
 return M

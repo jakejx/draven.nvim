@@ -146,7 +146,7 @@ local function placement(width, height)
 end
 
 ---Open the composer.
----@param opts { title: string, body?: string, severity?: draven.Severity, on_submit: fun(body: string, severity: draven.Severity) }
+---@param opts { title: string, body?: string, severity?: draven.Severity, on_submit: fun(body: string, severity: draven.Severity): boolean|nil }
 function M.open(opts)
 	M.close()
 
@@ -247,10 +247,12 @@ function M.open(opts)
 			return
 		end
 
+		if opts.on_submit(body, severity) == false then
+			return
+		end
 		submitted = true
 		vim.bo[bufnr].modified = false
 		M.close()
-		opts.on_submit(body, severity)
 	end
 
 	vim.keymap.set({ "n", "i" }, "<C-s>", submit, { buffer = bufnr, desc = "Save finding" })

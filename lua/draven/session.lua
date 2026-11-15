@@ -186,6 +186,14 @@ end
 ---Swap in a freshly built changeset, keeping every mark.
 ---@param cs draven.Changeset
 function Session:update(cs)
+	local path = state_store.path(cs)
+	if path ~= self.path then
+		-- @ may now name a different change. Flush the old review before
+		-- switching both metadata and snapshot ownership to the new target.
+		self:close()
+		self.state = state_store.load(cs)
+		self.path = path
+	end
 	self.changeset = cs
 	self:_settle_base()
 	self:reindex()
@@ -522,6 +530,16 @@ function Session:file_state(file)
 		return "reviewed"
 	end
 	return "partial"
+end
+
+---Every file's review state, keyed by path.
+---@return table<string, "reviewed"|"partial"|"stale"|"unread"|"ignored"|"empty">
+function Session:file_states()
+	local out = {}
+	for _, file in ipairs(self.changeset.files) do
+		out[file.path] = self:file_state(file)
+	end
+	return out
 end
 
 --- Navigation ----------------------------------------------------------------

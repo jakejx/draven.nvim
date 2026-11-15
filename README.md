@@ -21,7 +21,7 @@ goes stale.
 ## Requirements
 
 - Neovim 0.10+ (developed against 0.12)
-- git
+- Git or Jujutsu (`jj`; tested with 0.46)
 
 ## Install
 
@@ -67,6 +67,30 @@ vim.keymap.set("n", "<leader>ro", "<cmd>Draven<cr>", { desc = "[R]eview [O]pen" 
 
 ## Usage
 
+Draven detects the nearest repository and prefers jj in colocated workspaces.
+Set `backend = "git"` or `"jj"` to override automatic selection.
+
+In a jj workspace:
+
+```vim
+:Draven                       " working-copy change @ vs its merged parents
+:Draven -r @-                 " one revision vs its merged parents
+:Draven --from main --to @    " compare two revision trees
+:Draven --from main           " omitted endpoint defaults to @
+```
+
+A positional revision also works (`:Draven @-`). Each revision expression must
+resolve to exactly one commit; reviewing whole revsets/stacks is not yet supported.
+For flag values containing spaces, escape spaces with `\ ` (Vim command argument
+syntax), or use the Lua API. Git-style `..`/`...` parsing is only used by Git.
+The same arguments work with `DravenToggle`, `DravenStatus`, and `DravenReset`.
+
+jj reviews snapshot the working copy using jj's tracking configuration. Draven
+does not explicitly track files or enumerate untracked files for jj; the
+`include_untracked` option applies only to Git.
+
+In a Git repository:
+
 ```vim
 :Draven                  " working tree vs HEAD, the usual case
 :Draven main             " working tree vs main
@@ -105,7 +129,7 @@ These are all buffer-local to the review:
 | `<leader>rX` | `delete_finding` | delete the finding under the cursor |
 | `<leader>rq` | `list_findings` | load all findings into the quickfix list |
 | `<leader>rx` | `export` | copy findings as a prompt for the agent |
-| `<leader>rR` | `refresh` | rebuild from git, keeping every mark |
+| `<leader>rR` | `refresh` | rebuild from the VCS, keeping every mark |
 | `<leader>rw` | `toggle_panel` | hide the panel, or bring it back |
 | `<CR>` | `open_entry` | panel only: open a file, or fold a directory |
 
@@ -224,7 +248,9 @@ local draven = require("draven")
 
 -- Blocking: convenient from `:lua` and tests, never from a mapping.
 local cs = draven.changeset()
-local cs = draven.changeset({ rev = "main...HEAD", cwd = "/path/to/repo" })
+local cs = draven.changeset({ rev = "main...HEAD", cwd = "/path/to/git-repo" })
+local cs = draven.changeset({ backend = "jj", rev = "@-", cwd = "/path/to/jj-workspace" })
+local cs = draven.changeset({ backend = "jj", from = "main", to = "@" })
 
 -- Async: how everything internal calls it.
 draven.changeset({ rev = "main" }, function(err, cs)
@@ -268,13 +294,15 @@ Defaults shown:
 
 ```lua
 require("draven").setup({
-  base = "HEAD",              -- default base for a working-tree review
+  backend = "auto",           -- "auto", "git", or "jj"
+  base = "HEAD",              -- Git only: default base for a working-tree review
   context = 3,                -- lines of context per hunk
-  include_untracked = true,   -- new files the agent created count too
+  include_untracked = true,   -- Git only; jj respects its tracking configuration
   max_file_bytes = 1024*1024, -- larger untracked files are listed, not read
   log_level = vim.log.levels.INFO,
 
   git = { bin = "git", timeout_ms = 15000 },
+  jj = { bin = "jj", timeout_ms = 15000 },
 
   ignore = {
     enabled = true,
@@ -298,8 +326,12 @@ require("draven").setup({
 })
 ```
 
-Review state lives in `<gitdir>/draven/<revspec>.json`. It is plain JSON, one
-file per review target, keyed by content hash.
+Git review state lives in `<gitdir>/draven/<revspec>.json`; jj state lives in
+`<workspace>/.jj/draven/`. It is plain JSON, one file per review target, with
+content-addressed approvals and snapshots. Default jj reviews are keyed by
+change ID, so rewriting a change preserves its review but `jj new` starts a
+separate one. Explicit comparisons use resolved change identities; equivalent
+revision expressions share review state.
 
 Ignored files stay visible in the changeset but they are left out of the
 totals, so a regenerated lockfile cannot make your review progress look worse
